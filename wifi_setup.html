@@ -1,0 +1,778 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IoT Connect Hub - Wi-Fi Setup</title>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        :root {
+            --primary: #1e40af;
+            --primary-dark: #1e3a8a;
+            --secondary: #2dd4bf;
+            --neutral: #f1f5f9;
+            --dark: #1f2937;
+            --text: #111827;
+            --text-light: #6b7280;
+            --shadow: rgba(0, 0, 0, 0.15);
+            --shadow-dark: rgba(0, 0, 0, 0.25);
+            --border: #e5e7eb;
+            --success: #10b981;
+            --error: #ef4444;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        body {
+            background: linear-gradient(145deg, #f1f5f9 0%, #e2e8f0 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 1.5rem;
+            perspective: 1200px;
+            overflow-x: hidden;
+        }
+        
+        .circuit-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -1;
+            background: url('data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"%3E%3Cpath d="M10,50 H90 M50,10 V90" stroke="%231e40af" stroke-width="0.5" stroke-opacity="0.1"/%3E%3C/svg%3E');
+            opacity: 0.3;
+        }
+        
+        .particles-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: -2;
+        }
+        
+        .particle {
+            position: absolute;
+            background: radial-gradient(circle, var(--secondary) 20%, transparent 70%);
+            opacity: 0.2;
+            border-radius: 50%;
+            animation: float 14s infinite ease-in-out;
+        }
+        
+        @keyframes float {
+            0%, 100% { transform: translateY(0) translateX(0); }
+            25% { transform: translateY(-30px) translateX(15px); }
+            50% { transform: translateY(-15px) translateX(30px); }
+            75% { transform: translateY(-30px) translateX(-15px); }
+        }
+        
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 1rem 2rem;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(8px);
+            box-shadow: 0 2px 6px var(--shadow);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .nav-logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        
+        .nav-logo svg {
+            width: 32px;
+            height: 32px;
+            fill: var(--primary);
+        }
+        
+        .nav-logo span {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--primary);
+        }
+        
+        .nav-menu {
+            display: flex;
+            gap: 1.5rem;
+        }
+        
+        .nav-menu a {
+            color: var(--text-light);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.95rem;
+            transition: color 0.3s;
+        }
+        
+        .nav-menu a:hover {
+            color: var(--primary);
+        }
+        
+        .nav-toggle {
+            display: none;
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            color: var(--primary);
+            cursor: pointer;
+        }
+        
+        .main-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-top: 5rem;
+            display: flex;
+            justify-content: center;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 2.5rem;
+            box-shadow: 0 8px 24px var(--shadow);
+            transform-style: preserve-3d;
+            transform: rotateX(2deg);
+            transition: transform 0.5s ease, box-shadow 0.5s ease;
+            width: 100%;
+            animation: fadeIn 0.8s ease-out;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px) rotateX(10deg); }
+            to { opacity: 1; transform: translateY(0) rotateX(2deg); }
+        }
+        
+        .card:hover {
+            transform: rotateX(0deg) translateY(-8px);
+            box-shadow: 0 12px 32px var(--shadow-dark);
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        
+        .logo-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            border-radius: 12px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-right: 0.75rem;
+            box-shadow: 0 4px 8px rgba(30, 64, 175, 0.2);
+        }
+        
+        .logo-icon svg {
+            width: 28px;
+            height: 28px;
+            fill: white;
+        }
+        
+        .logo-text {
+            font-weight: 800;
+            font-size: 1.4rem;
+            color: var(--primary);
+        }
+        
+        .logo-text span {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 400;
+            color: var(--text-light);
+        }
+        
+        h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            color: var(--text);
+            margin-bottom: 1rem;
+            line-height: 1.3;
+        }
+        
+        h1 span {
+            color: var(--primary);
+        }
+        
+        p {
+            color: var(--text-light);
+            margin-bottom: 1.5rem;
+            font-size: 1rem;
+            line-height: 1.7;
+        }
+        
+        .input-container {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+        
+        .input-icon {
+            position: absolute;
+            top: 50%;
+            left: 1rem;
+            transform: translateY(-50%);
+            color: var(--text-light);
+            transition: transform 0.3s ease;
+        }
+        
+        .input-icon svg {
+            width: 22px;
+            height: 22px;
+            fill: var(--text-light);
+        }
+        
+        .input-container.focused .input-icon {
+            transform: translateY(-50%) scale(1.1);
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: translateY(-50%) scale(1.1); }
+            50% { transform: translateY(-50%) scale(1.2); }
+        }
+        
+        .input-label {
+            position: absolute;
+            top: 0.9rem;
+            left: 3.5rem;
+            color: var(--text-light);
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+        
+        input {
+            width: 100%;
+            padding: 1.2rem 1rem 0.6rem 3.5rem;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: white;
+        }
+        
+        input:focus, input:not(:placeholder-shown) {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(30, 64, 175, 0.1);
+            outline: none;
+        }
+        
+        input:focus + .input-label, input:not(:placeholder-shown) + .input-label {
+            top: -0.5rem;
+            left: 2.5rem;
+            font-size: 0.75rem;
+            color: var(--primary);
+            background: white;
+            padding: 0 0.25rem;
+        }
+        
+        input::placeholder {
+            color: transparent;
+        }
+        
+        .error-message {
+            color: var(--error);
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+            text-align: left;
+            display: none;
+        }
+        
+        .status-message {
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            text-align: center;
+            font-weight: 500;
+            padding: 0.5rem;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid var(--border);
+            opacity: 0;
+            animation: fadeInStatus 0.5s ease forwards;
+        }
+        
+        @keyframes fadeInStatus {
+            to { opacity: 1; }
+        }
+        
+        .status-message.success {
+            color: var(--success);
+            border-color: var(--success);
+        }
+        
+        .status-message.error {
+            color: var(--error);
+            border-color: var(--error);
+        }
+        
+        .cta-button, .provision-button {
+            position: relative;
+            width: 100%;
+            padding: 0.9rem;
+            margin-bottom: 1rem;
+            border: none;
+            border-radius: 12px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            overflow: hidden;
+            transition: all 0.3s ease;
+            box-shadow: 0 6px 12px rgba(30, 64, 175, 0.3);
+        }
+        
+        .cta-button:hover, .provision-button:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 8px 16px rgba(30, 64, 175, 0.4), 0 0 12px rgba(30, 64, 175, 0.2);
+        }
+        
+        .cta-button::before, .provision-button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+            transition: all 0.5s ease;
+        }
+        
+        .cta-button:hover::before, .provision-button:hover::before {
+            left: 100%;
+        }
+        
+        .cta-button::after, .provision-button::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--dark);
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            white-space: nowrap;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            margin-bottom: 0.5rem;
+        }
+        
+        .cta-button:hover::after, .provision-button:hover::after {
+            opacity: 1;
+            visibility: visible;
+            margin-bottom: 1rem;
+        }
+        
+        .waves {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            overflow: hidden;
+            line-height: 0;
+            z-index: -1;
+        }
+        
+        .waves svg {
+            position: relative;
+            display: block;
+            width: calc(100% + 1.3px);
+            height: 80px;
+        }
+        
+        .waves .shape-fill {
+            fill: rgba(30, 64, 175, 0.1);
+        }
+        
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+            
+            .navbar {
+                padding: 0.75rem 1.5rem;
+            }
+            
+            .nav-menu {
+                display: none;
+                flex-direction: column;
+                position: absolute;
+                top: 100%;
+                left: 0;
+                width: 100%;
+                background: rgba(255, 255, 255, 0.95);
+                padding: 1rem;
+                box-shadow: 0 4px 8px var(--shadow);
+            }
+            
+            .nav-menu.active {
+                display: flex;
+            }
+            
+            .nav-toggle {
+                display: block;
+            }
+            
+            .card {
+                padding: 1.5rem;
+            }
+            
+            h1 {
+                font-size: 1.75rem;
+            }
+            
+            p {
+                font-size: 0.9rem;
+            }
+            
+            .waves svg {
+                height: 60px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            h1 {
+                font-size: 1.5rem;
+            }
+            
+            .card {
+                padding: 1.25rem;
+            }
+            
+            .input-container input {
+                padding: 1rem 0.75rem 0.5rem 3rem;
+                font-size: 0.9rem;
+            }
+            
+            .input-label {
+                font-size: 0.9rem;
+            }
+            
+            input:focus + .input-label, input:not(:placeholder-shown) + .input-label {
+                top: -0.4rem;
+                font-size: 0.7rem;
+            }
+            
+            .cta-button, .provision-button {
+                padding: 0.75rem;
+                font-size: 0.9rem;
+            Darker: #111827;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="circuit-bg"></div>
+    <div class="particles-container" id="particles-container"></div>
+    
+    <nav class="navbar">
+        <div class="nav-logo">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                <path d="M16.36,14C16.44,13.34 16.5,12.68 16.5,12C16.5,11.32 16.44,10.66 16.36,10H19.74C19.9,10.64 20,11.31 20,12C20,12.69 19.9,13.36 19.74,14M14.59,19.56C15.19,18.45 15.65,17.25 15.97,16H18.92C17.96,17.65 16.43,18.93 14.59,19.56M14.34,14H9.66C9.56,13.34 9.5,12.68 9.5,12C9.5,11.32 9.56,10.65 9.66,10H14.34C14.44,10.65 14.5,11.32 14.5,12C14.5,12.68 14.44,13.34 14.34,14M12,19.96C11.17,18.76 10.5,17.43 10.09,16H13.91C13.5,17.43 12.83,18.76 12,19.96M8,8H5.08C6.03,6.34 7.57,5.06 9.4,4.44C8.8,5.55 8.35,6.75 8,8M5.08,16H8C8.35,17.25 8.8,18.45 9.4,19.56C7.57,18.93 6.03,17.65 5.08,16M4.26,14C4.1,13.36 4,12.69 4,12C4,11.31 4.1,10.64 4.26,10H7.64C7.56,10.66 7.5,11.32 7.5,12C7.5,12.68 7.56,13.34 7.64,14M12,4.03C12.83,5.23 13.5,6.57 13.91,8H10.09C10.5,6.57 11.17,5.23 12,4.03M18.92,8H15.97C15.65,6.75 15.19,5.55 14.59,4.44C16.43,5.07 17.96,6.34 18.92,8M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />
+            </svg>
+            <span>IoTConnect</span>
+        </div>
+        <div class="nav-menu" id="navMenu">
+            <a href="landing_page1.html">Home</a>
+            <a href="dashboard.html">Devices</a>
+            <a href="profile_page1.html">Profile</a>
+            <a href="#">Support</a>
+        </div>
+        <button class="nav-toggle" id="navToggle">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+                <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
+            </svg>
+        </button>
+    </nav>
+    
+    <div class="main-container">
+        <div class="card">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                        <path d="M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M12,17A5,5 0 0,1 7,12A5,5 0 0,1 12,7A5,5 0 0,1 17,12A5,5 0 0,1 12,17M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C17,19.5 21.27,16.39 23,12C21.27,7.61 17,4.5 12,4.5Z" />
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    IoTConnect
+                    <span>Device Management System</span>
+                </div>
+            </div>
+            
+            <h1>Configure <span>Wi-Fi</span> for Your Device</h1>
+            <p>Enter your Wi-Fi credentials to connect your IoT device to the network.</p>
+            
+            <div class="input-container">
+                <div class="input-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                        <path d="M16.36,14C16.44,13.34 16.5,12.68 16.5,12C16.5,11.32 16.44,10.66 16.36,10H19.74C19.9,10.64 20,11.31 20,12C20,12.69 19.9,13.36 19.74,14M14.59,19.56C15.19,18.45 15.65,17.25 15.97,16H18.92C17.96,17.65 16.43,18.93 14.59,19.56M14.34,14H9.66C9.56,13.34 9.5,12.68 9.5,12C9.5,11.32 9.56,10.65 9.66,10H14.34C14.44,10.65 14.5,11.32 14.5,12C14.5,12.68 14.44,13.34 14.34,14M12,19.96C11.17,18.76 10.5,17.43 10.09,16H13.91C13.5,17.43 12.83,18.76 12,19.96M8,8H5.08C6.03,6.34 7.57,5.06 9.4,4.44C8.8,5.55 8.35,6.75 8,8M5.08,16H8C8.35,17.25 8.8,18.45 9.4,19.56C7.57,18.93 6.03,17.65 5.08,16M4.26,14C4.1,13.36 4,12.69 4,12C4,11.31 4.1,10.64 4.26,10H7.64C7.56,10.66 7.5,11.32 7.5,12C7.5,12.68 7.56,13.34 7.64,14M12,4.03C12.83,5.23 13.5,6.57 13.91,8H10.09C10.5,6.57 11.17,5.23 12,4.03M18.92,8H15.97C15.65,6.75 15.19,5.55 14.59,4.44C16.43,5.07 17.96,6.34 18.92,8M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" />
+                    </svg>
+                </div>
+                <input type="text" id="ssid" placeholder="Wi-Fi SSID" autocomplete="off" required>
+                <label class="input-label" for="ssid">Wi-Fi SSID</label>
+                <div class="error-message" id="ssidError">Please enter the Wi-Fi SSID</div>
+            </div>
+            
+            <div class="input-container">
+                <div class="input-icon">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                        <path d="M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z" />
+                    </svg>
+                </div>
+                <input type="password" id="password" placeholder="Wi-Fi Password" autocomplete="off" required>
+                <label class="input-label" for="password">Wi-Fi Password</label>
+                <div class="error-message" id="passwordError">Please enter the Wi-Fi password</div>
+            </div>
+            
+            <button class="provision-button" data-tooltip="Initiate device provisioning" onclick="startProvision()">Start Provision</button>
+            <button class="cta-button" data-tooltip="Connect to Wi-Fi network" id="connectButton">Connect Device</button>
+            <p class="status-message" id="status"></p>
+        </div>
+    </div>
+    
+    <div class="waves">
+        <svg data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" preserveAspectRatio="none">
+            <path d="M321.39,56.44c58-10.79,114.16-30.13,172-41.86,82.39-16.72,168.19-17.73,250.45-.39C823.78,31,906.67,72,985.66,92.83c70.05,18.48,146.53,26.09,214.34,3V0H0V27.35A600.21,600.21,0,0,0,321.39,56.44Z" class="shape-fill"></path>
+        </svg>
+    </div>
+
+    <script>
+        // Create particles
+        function createParticles() {
+            const particlesContainer = document.getElementById('particles-container');
+            const particleCount = 15;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                
+                const size = Math.random() * 10 + 5;
+                particle.style.width = `${size}px`;
+                particle.style.height = `${size}px`;
+                
+                const posX = Math.random() * 100;
+                const posY = Math.random() * 100;
+                particle.style.left = `${posX}%`;
+                particle.style.top = `${posY}%`;
+                
+                const delay = Math.random() * 5;
+                particle.style.animationDelay = `${delay}s`;
+                
+                particlesContainer.appendChild(particle);
+            }
+        }
+        
+        // Handle navbar toggle
+        document.getElementById('navToggle').addEventListener('click', function() {
+            const navMenu = document.getElementById('navMenu');
+            navMenu.classList.toggle('active');
+        });
+        
+        // Input focus handling
+        document.querySelectorAll('.input-container input').forEach(input => {
+            input.addEventListener('focus', () => {
+                input.parentElement.classList.add('focused');
+            });
+            input.addEventListener('blur', () => {
+                input.parentElement.classList.remove('focused');
+            });
+        });
+        
+        // MQTT Setup
+        const broker = 'wss://64611cb98d5946f6a3925fe3c7fe3b65.s1.eu.hivemq.cloud:8884/mqtt';
+        const options = {
+            username: 'AADA_IOT_Dev',
+            password: 'Aada@008',
+            reconnectPeriod: 1000
+        };
+
+        const client = mqtt.connect(broker, options);
+        const statusElement = document.getElementById("status");
+
+        client.on('connect', () => {
+            console.log("Connected to MQTT broker");
+            statusElement.textContent = "Connected to Cloud";
+            statusElement.className = 'status-message success';
+            client.subscribe("smartplug/device1/status");
+        });
+
+        client.on('error', (err) => {
+            console.error("Connection error:", err);
+            statusElement.textContent = "MQTT Error";
+            statusElement.className = 'status-message error';
+        });
+
+        client.on('message', (topic, message) => {
+            if (topic === "smartplug/device1/status") {
+                statusElement.textContent = message.toString();
+                statusElement.className = 'status-message';
+            }
+        });
+
+        function startProvision() {
+            if (client.connected) {
+                client.publish("smartplug/device1/prov", "Start_Provision", {}, (err) => {
+                    if (err) {
+                        console.error("Failed to send start_provision:", err);
+                        statusElement.textContent = "Failed to start provisioning";
+                        statusElement.className = 'status-message error';
+                    } else {
+                        console.log("Sent: start_provision");
+                        statusElement.textContent = "Provisioning request sent";
+                        statusElement.className = 'status-message success';
+                    }
+                });
+            } else {
+                statusElement.textContent = "Not connected to cloud";
+                statusElement.className = 'status-message error';
+            }
+        }
+        
+        // Device data
+        const devices = {
+            'IOT123': {
+                code: 'IOT123',
+                id: 'device1',
+                type: 'Smart Plug',
+                mqtt_control_topic: 'smartplug/device1/control',
+                mqtt_status_topic: 'smartplug/device1/status',
+                mqtt_connect_topic: 'smartplug/device1/OF'
+            }
+        };
+        
+        // Send Wi-Fi credentials to ESP32
+        function sendCreds() {
+            const ssid = document.getElementById('ssid').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const status = document.getElementById('status');
+            const ssidError = document.getElementById('ssidError');
+            const passwordError = document.getElementById('passwordError');
+            
+            // Reset error messages
+            ssidError.style.display = 'none';
+            passwordError.style.display = 'none';
+            status.textContent = '';
+            status.className = 'status-message';
+            
+            if (!ssid) {
+                ssidError.style.display = 'block';
+                return false;
+            }
+            if (!password) {
+                passwordError.style.display = 'block';
+                return false;
+            }
+            
+            fetch('http://192.168.4.1/prov', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ssid: ssid, pass: password })
+            })
+            .then(res => {
+                if (!res.ok) throw new Error('HTTP error ' + res.status);
+                return res.text();
+            })
+            .then(data => {
+                status.textContent = 'Credentials sent! Device is connecting...';
+                status.className = 'status-message success';
+                
+                // Store credentials in localStorage
+                const deviceCode = sessionStorage.getItem('deviceCode');
+                if (deviceCode && devices[deviceCode]) {
+                    let deviceConfigs = JSON.parse(localStorage.getItem('deviceConfigs')) || {};
+                    deviceConfigs[devices[deviceCode].id] = { ssid, password };
+                    localStorage.setItem('deviceConfigs', JSON.stringify(deviceConfigs));
+                    
+                    // Clear deviceCode and redirect
+                    sessionStorage.removeItem('deviceCode');
+                    setTimeout(() => {
+                        window.location.href = 'dashboard.html';
+                    }, 2000);
+                }
+            })
+            .catch(err => {
+                status.textContent = 'Error: ' + err.message;
+                status.className = 'status-message error';
+            });
+            
+            return true;
+        }
+        
+        // Handle connect button click
+        document.getElementById('connectButton').addEventListener('click', function() {
+            sendCreds();
+        });
+        
+        // Initialize particles on page load
+        window.onload = function() {
+            createParticles();
+        };
+    </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'93cfa7f98d884569',t:'MTc0Njc3NzU1Mi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>
+</body>
+</html>
